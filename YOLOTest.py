@@ -272,12 +272,57 @@ def run_webcam_demo(weights_path):
     cap.release()
     cv2.destroyAllWindows()
     print("Webcam demo ended.")
+    
+def train_model_from_scratch(epochs, yolo_model_path, data_path, result_queue):
+    try:
+        # Start COMPLETELY from scratch    
+        base_model = yolo_model_path
 
+        print(f"[epochs={epochs}] Starting fresh training with: {base_model}")
+        yolo_model = YOLO(base_model)
+        yolo_model.train(
+            data=data_path,
+            epochs=epochs,
+            imgsz=640,
+            device=0,      #notes for my self
+            batch=8,       #Small batch size so we don't run out of VRAM on the 6GB GPU
+            cache="disk",  #Caches images to disk instead of RAM — avoids memory warning
+            amp=True,      #Mixed precision training — nearly 2x faster with no accuracy loss
+            workers=2,     #Reduced to 2 so CPU doesn't push too much into VRAM at once
+            mosaic=1.0,    #Combines 4 images — helps detect objects at varied sizes
+            flipud=0.5,    #Random vertical flip for more angle variety
+            fliplr=0.5,    #Random horizontal flip
+            degrees=15.0,  #Random rotation up to ±15 degrees
+            scale=0.5,     #Random zoom augmentation
+            plots=True,    #Plot useful data
+            name=f"train_epochs{epochs}"
+        )
+
+        weights_path = os.path.join("runs/detect", f"train_epochs{epochs}", "weights", "best.pt")
+
+        if not os.path.exists(weights_path):
+            print(f"[epochs={epochs}] Training done but weights not found — skipping.")
+            result_queue.put((epochs, None, -1))
+            return
+        
+        #Validate the trained model and get its mAP score
+        print(f"[epochs={epochs}] Validating: {weights_path}")
+        metrics = YOLO(weights_path).val()
+        current_map = metrics.box.map
+        print(f"[epochs={epochs}] mAP50-95: {current_map:.4f}")
+
+        save_score(epochs, weights_path, current_map)
+        result_queue.put((epochs, weights_path, current_map))
+    
+    except Exception as e:
+        print(f"[epochs={epochs}] Error: {e}")
+        result_queue.put((epochs, None, -1))
 
 #Training Worker
 def train_model(epochs, yolo_model_path, result_queue):
 
     try:
+        '''
         scores = load_scores()
 
         #Already done — skip training and validation entirely
@@ -290,6 +335,8 @@ def train_model(epochs, yolo_model_path, result_queue):
             else:
                 print(f"[epochs={epochs}] Score cached but weights missing — retraining...")
 
+        '''
+        
         #Resume a partial run using its last.pt checkpoint
         resume_info = find_resumable_run(epochs)
         if resume_info:

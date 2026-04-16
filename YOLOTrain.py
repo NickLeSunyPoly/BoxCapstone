@@ -120,7 +120,7 @@ def train_model_from_scratch(epochs, yolo_model_path, data_path):
         current_map = metrics.box.map
         print(f"[epochs={epochs}] mAP50-95: {current_map:.4f}")
 
-        save_score(epochs, weights_path, current_map)
+        #save_score(epochs, weights_path, current_map)
             
     except Exception as e:
         print(f"[epochs={epochs}] Error: {e}")

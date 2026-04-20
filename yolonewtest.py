@@ -16,13 +16,13 @@ model_cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mode
 #tier of model: n=nano, s=small, m=medium, l=large, x=xlarge
 model_tier = "m"
 
-#List of epoch counts to train and compare
+#Epoch counts
 epoch_number = [75]
 
 scores_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", "epoch_scores.json")
 
 
-#Downloads the latest YOLO .pt model from GitHub, uses cache if already downloaded
+#Downloads the latest YOLO.pt model from GitHub, uses cache if already downloaded
 def fetch_best_yolo_from_github(tier=model_tier, cache_dir=model_cache_dir):
     os.makedirs(cache_dir, exist_ok=True)
 

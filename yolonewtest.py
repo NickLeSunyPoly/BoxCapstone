@@ -218,3 +218,38 @@ if __name__ == "__main__":
 
         if input("\nRun live webcam demo? (y/n): ").strip().lower() == "y":
             run_webcam_demo(best_weights)
+            
+def watch_for_box(on_detected=None, is_running=None, log_callback=None, cam_index=0):
+    # Load the best trained model (same logic as the rest of the file)
+    weights_path = find_best_existing_model()
+    if weights_path is None:
+        weights_path = f"yolo11{model_tier}.pt"
+    
+    yolo_model = YOLO(weights_path)  # defined locally now — fixes the error
+    
+    cap = cv2.VideoCapture(cam_index)
+    consecutive = 0
+    notified = False
+    while True:
+        if is_running and not is_running():
+            break
+        ret, frame = cap.read()
+        if not ret:
+            break
+        results = yolo_model(frame, verbose=False, conf=0.60, iou=0.60)
+        # check if any detection matches your box class
+        box_found = any(
+            yolo_model.names[int(b.cls[0])].lower() in {"package", "box", "parcel"}
+            for b in results[0].boxes
+        )
+        if box_found:
+            consecutive += 1
+        else:
+            consecutive = 0
+        if consecutive >= 5 and not notified:
+            notified = True
+            consecutive = 0
+            if on_detected:
+                on_detected()
+    cap.release()
+    cv2.destroyAllWindows()

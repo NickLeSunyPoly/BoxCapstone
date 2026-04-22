@@ -161,16 +161,30 @@ def show_confirm_dialog(snapshot):
 
     tk.Button(match_frame, text="Confirm", command=confirm_match).pack(pady=6)
 
+#Returns center (cx, cy) of the first matching box, or None
+def get_box_center(results, names):
+    for b in results[0].boxes:
+        if names[int(b.cls[0])].lower() in {"package", "box", "parcel"}:
+            x1, y1, x2, y2 = b.xyxy[0].tolist()
+            return ((x1 + x2) / 2, (y1 + y2) / 2)
+    return None
+
 #Background loop — runs YOLO detection and shows live annotated feed in a cv2 window
 def webcam_loop():
+    import time
     from ultralytics import YOLO as _YOLO
     weights_path = yolo_detector.find_best_existing_model()
     if weights_path is None:
         weights_path = f"yolo11{yolo_detector.model_tier}.pt"
     yolo_model = _YOLO(weights_path)
     cap = cv2.VideoCapture(0)
-    consecutive = 0
+    stable_since = None
+    last_center = None
     notified = False
+    #Box must stay within this many pixels of its original position to count as stable
+    move_threshold = 60
+    #Seconds the box must remain stable before triggering
+    required_seconds = 5
     while cam_running:
         ret, frame = cap.read()
         if not ret:
@@ -179,19 +193,27 @@ def webcam_loop():
         annotated = results[0].plot()
         cv2.imshow("Package Detector — Live Feed", annotated)
         cv2.waitKey(1)
-        box_found = any(
-            yolo_model.names[int(b.cls[0])].lower() in {"package", "box", "parcel"}
-            for b in results[0].boxes
-        )
-        if box_found:
-            consecutive += 1
-        else:
-            consecutive = 0
+        center = get_box_center(results, yolo_model.names)
+        if center is None:
+            #No box — reset
+            stable_since = None
+            last_center = None
             notified = False
-        if consecutive >= 5 and not notified:
-            notified = True
-            consecutive = 0
-            on_package_detected(annotated)
+        elif last_center is None:
+            #First detection — start tracking
+            last_center = center
+            stable_since = time.time()
+        else:
+            dx = abs(center[0] - last_center[0])
+            dy = abs(center[1] - last_center[1])
+            if dx > move_threshold or dy > move_threshold:
+                #Box moved too much — reset timer
+                last_center = center
+                stable_since = time.time()
+                notified = False
+            elif not notified and (time.time() - stable_since) >= required_seconds:
+                notified = True
+                on_package_detected(annotated)
     cap.release()
     cv2.destroyAllWindows()
     root.after(0, lambda: status_label.config(text="Status: Webcam stopped", fg="gray"))

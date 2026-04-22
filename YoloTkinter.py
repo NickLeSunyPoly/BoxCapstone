@@ -57,6 +57,7 @@ status_label.pack(pady=(2, 8))
 packages = []
 cam_running = False
 cam_thread = None
+dialog_open = False
 
 def add_package():
     date_str = date_entry.get().strip()
@@ -99,6 +100,10 @@ def refresh_listbox():
 
 #Called from background thread when a package is detected — marshalled to main thread
 def on_package_detected(snapshot):
+    global dialog_open
+    if dialog_open:
+        return
+    dialog_open = True
     root.after(0, lambda: show_confirm_dialog(snapshot))
 
 #Shows snapshot and asks user to confirm and match to a package
@@ -122,23 +127,21 @@ def show_confirm_dialog(snapshot):
 
     tk.Label(win, text="Is this one of your packages?").pack(pady=(4, 2))
 
-    #Yes/No
-    answer = tk.BooleanVar(value=False)
-
     def on_yes():
-        answer.set(True)
         yes_btn.config(state="disabled")
         no_btn.config(state="disabled")
         match_frame.pack(pady=6)
 
     def on_no():
+        global dialog_open
+        dialog_open = False
         win.destroy()
 
     btn_row = tk.Frame(win)
     btn_row.pack()
     yes_btn = tk.Button(btn_row, text="Yes", width=8, command=on_yes)
     yes_btn.pack(side="left", padx=8)
-    no_btn = tk.Button(btn_row, text="No",  width=8, command=on_no)
+    no_btn = tk.Button(btn_row, text="No", width=8, command=on_no)
     no_btn.pack(side="left", padx=8)
 
     #Match to list item
@@ -150,18 +153,47 @@ def show_confirm_dialog(snapshot):
         tk.Radiobutton(match_frame, text=f"{p['size']}  |  {p['date']}", variable=match_var, value=i).pack(anchor="w", padx=16)
 
     def confirm_match():
+        global dialog_open
         packages[match_var.get()]["arrived"] = True
         refresh_listbox()
+        dialog_open = False
         win.destroy()
 
     tk.Button(match_frame, text="Confirm", command=confirm_match).pack(pady=6)
 
-#Background webcam watch loop
+#Background loop — runs YOLO detection and shows live annotated feed in a cv2 window
 def webcam_loop():
-    yolo_detector.watch_for_box(
-        on_detected=on_package_detected,
-        is_running=lambda: cam_running
-    )
+    from ultralytics import YOLO as _YOLO
+    weights_path = yolo_detector.find_best_existing_model()
+    if weights_path is None:
+        weights_path = f"yolo11{yolo_detector.model_tier}.pt"
+    yolo_model = _YOLO(weights_path)
+    cap = cv2.VideoCapture(0)
+    consecutive = 0
+    notified = False
+    while cam_running:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        results = yolo_model(frame, verbose=False, conf=0.60, iou=0.60)
+        annotated = results[0].plot()
+        cv2.imshow("Package Detector — Live Feed", annotated)
+        cv2.waitKey(1)
+        box_found = any(
+            yolo_model.names[int(b.cls[0])].lower() in {"package", "box", "parcel"}
+            for b in results[0].boxes
+        )
+        if box_found:
+            consecutive += 1
+        else:
+            consecutive = 0
+            notified = False
+        if consecutive >= 5 and not notified:
+            notified = True
+            consecutive = 0
+            on_package_detected(annotated)
+    cap.release()
+    cv2.destroyAllWindows()
     root.after(0, lambda: status_label.config(text="Status: Webcam stopped", fg="gray"))
 
 def toggle_webcam():

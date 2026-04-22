@@ -1,11 +1,9 @@
 from ultralytics import YOLO
 import os
 import glob
-import multiprocessing
 import cv2
 import json
 import urllib.request
-import urllib.error
 
 #Configuration
 data_path  = "C:/Users/Nick/Downloads/packages.v2i.yolov11/data.yaml"
@@ -17,7 +15,7 @@ model_cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mode
 model_tier = "m"
 
 #Epoch counts
-epoch_number = [75]
+epoch_number = 75
 
 scores_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", "epoch_scores.json")
 
@@ -32,7 +30,6 @@ def fetch_best_yolo_from_github(tier=model_tier, cache_dir=model_cache_dir):
         with urllib.request.urlopen(req, timeout=10) as resp:
             release_data = json.loads(resp.read().decode())
 
-        #Build a lookup of filename -> download URL for all .pt files
         assets = {
             a["name"]: a["browser_download_url"]
             for a in release_data.get("assets", [])
@@ -50,7 +47,6 @@ def fetch_best_yolo_from_github(tier=model_tier, cache_dir=model_cache_dir):
     except Exception as e:
         print(f"[ERROR] GitHub model fetch failed: {e}")
 
-    #Fallback
     return f"yolo11{tier}.pt"
 
 
@@ -127,13 +123,12 @@ def run_webcam_demo(weights_path):
     cv2.destroyAllWindows()
 
 
-#Trains for the given epoch count, validates, and pushes the result onto the queue
-def train_model(epochs, yolo_model_path, result_queue):
+#Trains for the given epoch count, validates, and returns the result
+def train_model(epochs, yolo_model_path):
     try:
         existing_weights = find_existing_run(epochs)
 
         if existing_weights:
-            
             #Completed run found — skip straight to validation
             weights_path = existing_weights
         else:
@@ -159,68 +154,45 @@ def train_model(epochs, yolo_model_path, result_queue):
             weights_path = os.path.join("runs/detect", f"train_epochs{epochs}", "weights", "best.pt")
             if not os.path.exists(weights_path):
                 print(f"[ERROR] epochs={epochs}: weights not found after training.")
-                result_queue.put((epochs, None, -1))
-                return
+                return epochs, None, -1
 
         #Validate and record the mAP score
         metrics     = YOLO(weights_path).val()
         current_map = metrics.box.map
 
         save_score(epochs, weights_path, current_map)
-        result_queue.put((epochs, weights_path, current_map))
+        return epochs, weights_path, current_map
 
     except Exception as e:
         print(f"[ERROR] epochs={epochs}: {e}")
-        result_queue.put((epochs, None, -1))
+        return epochs, None, -1
 
 
 if __name__ == "__main__":
     yolo_model_path = fetch_best_yolo_from_github()
+    scores = load_scores()
 
-    result_queue = multiprocessing.Queue()
-    processes    = []
-    scores       = load_scores()
-
-    #Skip launching a process for any epoch count that's already been scored
-    epochs_to_run = []
+    #Use cached result if already scored, otherwise train
     entry = scores.get(str(epoch_number))
     if entry and os.path.exists(entry["weights"]):
-        result_queue.put((epoch_number, entry["weights"], entry["map"]))
+        print(f"[INFO] Using cached result for {epoch_number} epochs.")
+        best_epoch, best_weights, best_map = epoch_number, entry["weights"], entry["map"]
     else:
-        epochs_to_run.append(epoch_number)
+        best_epoch, best_weights, best_map = train_model(epoch_number, yolo_model_path)
 
-    #Launch each training run in its own process
-    for epochs in epochs_to_run:
-        p = multiprocessing.Process(target=train_model, args=(epochs, yolo_model_path, result_queue))
-        processes.append(p)
-        p.start()
-
-    for p in processes:
-        p.join()
-
-    #Collect all results from the queue
-    results = []
-    while not result_queue.empty():
-        results.append(result_queue.get())
-
-    valid_results = [(e, w, m) for e, w, m in results if m >= 0]
-
-    if not valid_results:
-        print("[ERROR] No valid runs completed.")
+    if best_map < 0:
+        print("[ERROR] Training did not complete successfully.")
     else:
-        #Pick the run with the highest mAP
-        best_epoch, best_weights, best_map = max(valid_results, key=lambda x: x[2])
-
         print(f"\nBest model — Epochs: {best_epoch} | mAP50-95: {best_map:.4f} | Weights: {best_weights}")
 
-        #Run inference on the test image
+        # Run inference on the test image
         YOLO(best_weights)(test_image)[0].show()
 
         if input("\nRun live webcam demo? (y/n): ").strip().lower() == "y":
             run_webcam_demo(best_weights)
-            
+
+
 def watch_for_box(on_detected=None, is_running=None, log_callback=None, cam_index=0):
-    # Load the best trained model (same logic as the rest of the file)
     weights_path = find_best_existing_model()
     if weights_path is None:
         weights_path = f"yolo11{model_tier}.pt"
@@ -229,7 +201,8 @@ def watch_for_box(on_detected=None, is_running=None, log_callback=None, cam_inde
     
     cap = cv2.VideoCapture(cam_index)
     consecutive = 0
-    notified = False
+    notified    = False
+
     while True:
         if is_running and not is_running():
             break
@@ -242,14 +215,17 @@ def watch_for_box(on_detected=None, is_running=None, log_callback=None, cam_inde
             yolo_model.names[int(b.cls[0])].lower() in {"package", "box", "parcel"}
             for b in results[0].boxes
         )
+
         if box_found:
             consecutive += 1
         else:
             consecutive = 0
+
         if consecutive >= 5 and not notified:
-            notified = True
+            notified    = True
             consecutive = 0
             if on_detected:
                 on_detected()
+
     cap.release()
     cv2.destroyAllWindows()

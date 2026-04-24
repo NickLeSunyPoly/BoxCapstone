@@ -33,11 +33,16 @@ def find_best_existing_model(base_path=None):
 
 #Returns the (cx, cy) center of the first detected package box, or None
 def get_box_center(results, names):
+    best = None
+    best_conf = 0
     for b in results[0].boxes:
         if names[int(b.cls[0])].lower() in {"package", "box", "parcel"}:
-            x1, y1, x2, y2 = b.xyxy[0].tolist()
-            return ((x1 + x2) / 2, (y1 + y2) / 2)
-    return None
+            conf = float(b.conf[0])
+            if conf > best_conf:
+                best_conf = conf
+                x1, y1, x2, y2 = b.xyxy[0].tolist()
+                best = ((x1 + x2) / 2, (y1 + y2) / 2)
+    return best
 
 
 #Estimates package size from bounding-box area relative to frame size
@@ -64,7 +69,7 @@ def estimate_size(results, names, frame_h, frame_w):
 #is_running_fn() should return True while the loop should keep running.
 class PackageWatcher:
     def __init__(self, on_detected, is_running_fn,
-                 move_threshold=60, required_seconds=2, conf=0.60, iou=0.60):
+                 move_threshold=60, required_seconds=2, conf=0.60, iou=0.45):
         self.on_detected      = on_detected
         self.is_running       = is_running_fn
         self.move_threshold   = move_threshold

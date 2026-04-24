@@ -10,7 +10,7 @@ import cv2
 from PIL import Image, ImageTk
 
 try:
-    import YOLOnewTest as yolo_detector
+    import YoloOutput as yolo_detector
     YOLO_AVAILABLE = True
 except ImportError:
     YOLO_AVAILABLE = False
@@ -168,10 +168,10 @@ hist_tree.bind("<<TreeviewSelect>>", _show_photo)
 
 
 #state
-packages       = _load_csv()
-cam_running    = False
-cam_thread     = None
-dialog_open    = False
+packages    = _load_csv()
+cam_running = False
+cam_thread  = None
+dialog_open = False
 _listbox_order = []
 
 
@@ -279,7 +279,7 @@ def refresh_history():
         hist_tree.insert("", "end", values=("✔ Arrived", p["size"], p["expected_date"], p["photo_path"]), tags=("arrived",))
 
 
-#detection dialog
+#detection dialog — called via root.after from the webcam thread
 def on_package_detected(snapshot, predicted_size_short):
     global dialog_open
     if dialog_open:
@@ -353,92 +353,26 @@ def show_confirm_dialog(snapshot, predicted_size_short):
     tk.Button(match_frame, text="Confirm", command=confirm_match).pack(pady=6)
 
 
-#webcam helpers
-def get_box_center(results, names):
-    for b in results[0].boxes:
-        if names[int(b.cls[0])].lower() in {"package", "box", "parcel"}:
-            x1, y1, x2, y2 = b.xyxy[0].tolist()
-            return ((x1 + x2) / 2, (y1 + y2) / 2)
-    return None
-
-def _estimate_size(results, names, frame_h, frame_w):
-    for b in results[0].boxes:
-        if names[int(b.cls[0])].lower() in {"package", "box", "parcel"}:
-            x1, y1, x2, y2 = b.xyxy[0].tolist()
-            area_ratio = ((x2 - x1) * (y2 - y1)) / (frame_w * frame_h)
-            if area_ratio < 0.10:
-                return "Small"
-            elif area_ratio < 0.25:
-                return "Medium"
-            else:
-                return "Large"
-    return "Medium"
-
-
-#webcam loop
-def webcam_loop():
-    import time
-    from ultralytics import YOLO as _YOLO
-
-    weights_path = yolo_detector.find_best_existing_model()
-    if weights_path is None:
-        weights_path = f"yolo11{yolo_detector.model_tier}.pt"
-
-    yolo_model         = _YOLO(weights_path)
-    cap                = cv2.VideoCapture(0)
-    stable_since       = None
-    last_center        = None
-    notified           = False
-    last_notified_size = None
-    move_threshold     = 60
-    required_seconds   = 2
-
-    while cam_running:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        h, w      = frame.shape[:2]
-        results   = yolo_model(frame, verbose=False, conf=0.60, iou=0.60)
-        annotated = results[0].plot()
-        cv2.imshow("Package Detector — Live Feed", annotated)
-        cv2.waitKey(1)
-        center = get_box_center(results, yolo_model.names)
-
-        if center is None:
-            stable_since = None
-            last_center  = None
-            notified     = False
-        elif last_center is None:
-            last_center  = center
-            stable_since = time.time()
-        else:
-            dx = abs(center[0] - last_center[0])
-            dy = abs(center[1] - last_center[1])
-            if dx > move_threshold or dy > move_threshold:
-                last_center  = center
-                stable_since = time.time()
-                notified     = False
-            elif not notified and (time.time() - stable_since) >= required_seconds:
-                pred_size = _estimate_size(results, yolo_model.names, h, w)
-                if pred_size != last_notified_size:
-                    notified           = True
-                    last_notified_size = pred_size
-                    on_package_detected(annotated, pred_size)
-
-    cap.release()
-    cv2.destroyAllWindows()
-    root.after(0, lambda: status_label.config(text="Status: Webcam stopped", fg="gray"))
-
+#webcam toggle — spins up PackageWatcher from YoloOutput in a background thread
 def toggle_webcam():
     global cam_running, cam_thread
     if not YOLO_AVAILABLE:
-        messagebox.showerror("Missing Module", "YOLOnewTest.py could not be imported.")
+        messagebox.showerror("Missing Module", "YoloOutput.py could not be imported.")
         return
     if not cam_running:
         cam_running = True
         cam_btn.config(text="Stop Webcam Watch")
         status_label.config(text="Status: Watching…", fg="green")
-        cam_thread = threading.Thread(target=webcam_loop, daemon=True)
+
+        def _thread_target():
+            watcher = yolo_detector.PackageWatcher(
+                on_detected   = lambda frame, size: root.after(0, lambda: on_package_detected(frame, size)),
+                is_running_fn = lambda: cam_running,
+            )
+            watcher.run()
+            root.after(0, lambda: status_label.config(text="Status: Webcam stopped", fg="gray"))
+
+        cam_thread = threading.Thread(target=_thread_target, daemon=True)
         cam_thread.start()
     else:
         cam_running = False

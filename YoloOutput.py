@@ -12,7 +12,6 @@ import cv2
 model_tier = "m"
 scores_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", "epoch_scores.json")
 
-
 #Returns the best model weights by mAP score if available, otherwise most recent
 def find_best_existing_model(base_path=None):
     if os.path.exists(scores_file):

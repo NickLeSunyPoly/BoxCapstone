@@ -29,8 +29,9 @@ SIZE_OPTIONS = {
 }
 SIZE_KEYS = list(SIZE_OPTIONS.keys())
 
-#csv columns
-CSV_COLS = ["id", "size", "expected_date", "arrived", "photo_path"]
+#csv columns — "status" replaces the old "arrived" bool
+#status values: "pending" | "arrived" | "removed"
+CSV_COLS = ["id", "size", "expected_date", "status", "photo_path"]
 
 def _load_csv():
     if not os.path.exists(CSV_PATH):
@@ -39,7 +40,9 @@ def _load_csv():
     with open(CSV_PATH, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            row["arrived"] = row["arrived"].lower() == "true"
+            #back-compat: old files used "arrived" bool column
+            if "arrived" in row and "status" not in row:
+                row["status"] = "arrived" if row["arrived"].lower() == "true" else "pending"
             rows.append(row)
     return rows
 
@@ -48,7 +51,7 @@ def _save_csv(packages):
         writer = csv.DictWriter(f, fieldnames=CSV_COLS)
         writer.writeheader()
         for p in packages:
-            writer.writerow({**p, "arrived": str(p["arrived"])})
+            writer.writerow({k: p[k] for k in CSV_COLS})
 
 def _next_id(packages):
     if not packages:
@@ -66,7 +69,7 @@ def _save_photo(frame, size_short, date_str):
 #window
 root = tk.Tk()
 root.title("Package Delivery Tracker")
-root.geometry("520x580")
+root.geometry("520x600")
 root.resizable(False, False)
 
 notebook = ttk.Notebook(root)
@@ -114,8 +117,19 @@ status_label.pack(pady=(2, 8))
 tab_history = tk.Frame(notebook)
 notebook.add(tab_history, text="History")
 
+#filter bar — All / Late / Arrived / Removed
+filter_var = tk.StringVar(value="All")
+filter_bar = tk.Frame(tab_history)
+filter_bar.pack(fill="x", padx=8, pady=(6, 2))
+for label in ("All", "Late", "Arrived", "Removed"):
+    tk.Radiobutton(
+        filter_bar, text=label, variable=filter_var, value=label,
+        indicatoron=False, width=8, relief="groove",
+        command=lambda: refresh_history()
+    ).pack(side="left", padx=2)
+
 hist_frame = tk.Frame(tab_history)
-hist_frame.pack(fill="both", expand=True, padx=8, pady=6)
+hist_frame.pack(fill="both", expand=True, padx=8, pady=4)
 
 hist_scroll = tk.Scrollbar(hist_frame)
 hist_scroll.pack(side="right", fill="y")
@@ -125,7 +139,7 @@ hist_tree = ttk.Treeview(
     columns=("status", "size", "date", "photo"),
     show="headings",
     yscrollcommand=hist_scroll.set,
-    height=16,
+    height=14,
 )
 hist_tree.heading("status", text="Status")
 hist_tree.heading("size",   text="Size")
@@ -139,8 +153,9 @@ hist_tree.pack(fill="both", expand=True)
 hist_scroll.config(command=hist_tree.yview)
 
 hist_tree.tag_configure("arrived", foreground="green")
-hist_tree.tag_configure("pending", foreground="red")
+hist_tree.tag_configure("pending", foreground="orange")
 hist_tree.tag_configure("overdue", foreground="red")
+hist_tree.tag_configure("removed", foreground="gray")
 
 preview_label = tk.Label(tab_history, text="Select a row to preview its photo.", fg="gray")
 preview_label.pack(pady=(4, 2))
@@ -168,10 +183,10 @@ hist_tree.bind("<<TreeviewSelect>>", _show_photo)
 
 
 #state
-packages    = _load_csv()
-cam_running = False
-cam_thread  = None
-dialog_open = False
+packages       = _load_csv()
+cam_running    = False
+cam_thread     = None
+dialog_open    = False
 _listbox_order = []
 
 
@@ -188,6 +203,9 @@ def _parse_date(s):
     except ValueError:
         return None
 
+def _is_active(p):
+    return p["status"] != "removed"
+
 
 #tracker actions
 def add_package():
@@ -199,7 +217,7 @@ def add_package():
         "id":            _next_id(packages),
         "size":          _short_size(size_var.get()),
         "expected_date": date_str,
-        "arrived":       False,
+        "status":        "pending",
         "photo_path":    "",
     }
     packages.append(pkg)
@@ -212,7 +230,8 @@ def remove_package():
     if not sel:
         messagebox.showwarning("None Selected", "Select a package to remove.")
         return
-    packages.pop(_listbox_order[sel[0]])
+    #mark as removed rather than deleting — keeps it in history
+    packages[_listbox_order[sel[0]]]["status"] = "removed"
     _save_csv(packages)
     refresh_listbox()
     refresh_history()
@@ -222,7 +241,7 @@ def mark_arrived():
     if not sel:
         messagebox.showwarning("None Selected", "Select a package to mark as arrived.")
         return
-    packages[_listbox_order[sel[0]]]["arrived"] = True
+    packages[_listbox_order[sel[0]]]["status"] = "arrived"
     _save_csv(packages)
     refresh_listbox()
     refresh_history()
@@ -232,28 +251,32 @@ def refresh_listbox():
     pkg_listbox.delete(0, tk.END)
     today = _today()
 
-    def sort_key(p):
-        d    = _parse_date(p["expected_date"]) or datetime.date.max
-        late = d < today and not p["arrived"]
-        return (0 if late else 1 if not p["arrived"] else 2, d)
+    #only show active (non-removed) packages in the tracker list
+    active = [i for i, p in enumerate(packages) if _is_active(p)]
 
-    ordered        = sorted(range(len(packages)), key=lambda i: sort_key(packages[i]))
+    def sort_key(i):
+        p    = packages[i]
+        d    = _parse_date(p["expected_date"]) or datetime.date.max
+        late = d < today and p["status"] == "pending"
+        return (0 if late else 1 if p["status"] == "pending" else 2, d)
+
+    ordered        = sorted(active, key=sort_key)
     _listbox_order = ordered
 
     for i, idx in enumerate(ordered):
         pkg     = packages[idx]
-        check   = "[✔]" if pkg["arrived"] else "[ ]"
+        check   = "[✔]" if pkg["status"] == "arrived" else "[ ]"
         d       = _parse_date(pkg["expected_date"]) or datetime.date.max
-        overdue = d < today and not pkg["arrived"]
+        overdue = d < today and pkg["status"] == "pending"
         tag     = " ⚠ LATE" if overdue else ""
         pkg_listbox.insert(tk.END, f"{check}  {pkg['size']}  |  {pkg['expected_date']}{tag}")
-        if pkg["arrived"]:
+        if pkg["status"] == "arrived":
             pkg_listbox.itemconfig(i, fg="green")
         elif overdue:
             pkg_listbox.itemconfig(i, fg="red")
 
-    total   = len(packages)
-    arrived = sum(1 for p in packages if p["arrived"])
+    total   = len(active)
+    arrived = sum(1 for i in active if packages[i]["status"] == "arrived")
     status_label.config(
         text=f"Total: {total}  |  ✔ Arrived: {arrived}  |  ⏳ Pending: {total - arrived}",
         fg="gray"
@@ -263,20 +286,39 @@ def refresh_history():
     for row in hist_tree.get_children():
         hist_tree.delete(row)
     today = _today()
+    filt  = filter_var.get()
 
-    #pending first, then arrived — each sorted latest date first
-    pending = sorted([p for p in packages if not p["arrived"]], key=lambda p: _parse_date(p["expected_date"]) or datetime.date.min, reverse=True)
-    arrived = sorted([p for p in packages if     p["arrived"]], key=lambda p: _parse_date(p["expected_date"]) or datetime.date.min, reverse=True)
+    def _include(p):
+        s = p["status"]
+        d = _parse_date(p["expected_date"]) or datetime.date.max
+        if filt == "All":     return True
+        if filt == "Arrived": return s == "arrived"
+        if filt == "Removed": return s == "removed"
+        if filt == "Late":    return s == "pending" and d < today
+        return True
 
-    for p in pending:
-        d      = _parse_date(p["expected_date"]) or datetime.date.max
-        late   = d < today
-        status = "⚠ LATE" if late else "Pending"
-        tag    = "overdue" if late else "pending"
-        hist_tree.insert("", "end", values=(status, p["size"], p["expected_date"], p["photo_path"]), tags=(tag,))
+    #order: late → pending → arrived → removed, each by date desc
+    def _order_key(p):
+        d    = _parse_date(p["expected_date"]) or datetime.date.min
+        s    = p["status"]
+        late = s == "pending" and d < today
+        rank = 0 if late else 1 if s == "pending" else 2 if s == "arrived" else 3
+        return (rank, d)
 
-    for p in arrived:
-        hist_tree.insert("", "end", values=("✔ Arrived", p["size"], p["expected_date"], p["photo_path"]), tags=("arrived",))
+    filtered = sorted([p for p in packages if _include(p)], key=_order_key)
+
+    for p in filtered:
+        s = p["status"]
+        d = _parse_date(p["expected_date"]) or datetime.date.max
+        if s == "arrived":
+            label, tag = "✔ Arrived", "arrived"
+        elif s == "removed":
+            label, tag = "✖ Removed", "removed"
+        elif d < today:
+            label, tag = "⚠ LATE",    "overdue"
+        else:
+            label, tag = "Pending",   "pending"
+        hist_tree.insert("", "end", values=(label, p["size"], p["expected_date"], p["photo_path"]), tags=(tag,))
 
 
 #detection dialog — called via root.after from the webcam thread
@@ -289,7 +331,7 @@ def on_package_detected(snapshot, predicted_size_short):
 
 def show_confirm_dialog(snapshot, predicted_size_short):
     global dialog_open
-    pending = [i for i, p in enumerate(packages) if not p["arrived"]]
+    pending = [i for i, p in enumerate(packages) if p["status"] == "pending"]
     if not pending:
         dialog_open = False
         return
@@ -342,7 +384,7 @@ def show_confirm_dialog(snapshot, predicted_size_short):
         idx  = match_var.get()
         pkg  = packages[idx]
         path = _save_photo(snapshot, pkg["size"], pkg["expected_date"])
-        pkg["arrived"]    = True
+        pkg["status"]     = "arrived"
         pkg["photo_path"] = path
         _save_csv(packages)
         refresh_listbox()

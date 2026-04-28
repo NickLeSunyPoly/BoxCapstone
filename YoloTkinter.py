@@ -69,7 +69,7 @@ def _save_photo(frame, size_short, date_str):
 #window
 root = tk.Tk()
 root.title("Package Delivery Tracker")
-root.geometry("520x600")
+root.geometry("520x640")
 root.resizable(False, False)
 
 notebook = ttk.Notebook(root)
@@ -125,7 +125,7 @@ for label in ("All", "Late", "Arrived", "Removed"):
     tk.Radiobutton(
         filter_bar, text=label, variable=filter_var, value=label,
         indicatoron=False, width=8, relief="groove",
-        command=lambda: refresh_history()
+        command=lambda: (refresh_history(), _update_undo_btn_visibility())
     ).pack(side="left", padx=2)
 
 hist_frame = tk.Frame(tab_history)
@@ -139,7 +139,7 @@ hist_tree = ttk.Treeview(
     columns=("status", "size", "date", "photo"),
     show="headings",
     yscrollcommand=hist_scroll.set,
-    height=14,
+    height=12,
 )
 hist_tree.heading("status", text="Status")
 hist_tree.heading("size",   text="Size")
@@ -157,10 +157,29 @@ hist_tree.tag_configure("pending", foreground="orange")
 hist_tree.tag_configure("overdue", foreground="red")
 hist_tree.tag_configure("removed", foreground="gray")
 
+hist_tree.bind("<<TreeviewSelect>>", lambda e: (_show_photo(e), _update_undo_btn_visibility(e)))
+
+#undo button — sits between the treeview and the photo preview
+#packed immediately so its position in the layout is reserved, then hidden
+undo_btn = tk.Button(
+    tab_history, text="↩ Undo Remove  (Restore to Pending)",
+    command=lambda: undo_remove(),
+    bg="#f0e68c", activebackground="#daa520", relief="groove"
+)
+undo_btn.pack(pady=(4, 2))
+undo_btn.pack_forget()   # hidden until a Removed row is selected
+
 preview_label = tk.Label(tab_history, text="Select a row to preview its photo.", fg="gray")
 preview_label.pack(pady=(4, 2))
 photo_preview = tk.Label(tab_history)
 photo_preview.pack(pady=(0, 6))
+
+def _update_undo_btn_visibility(event=None):
+    """Show the undo button only when viewing Removed and a row is selected."""
+    if filter_var.get() == "Removed" and hist_tree.selection():
+        undo_btn.pack(after=hist_frame, pady=(4, 2))
+    else:
+        undo_btn.pack_forget()
 
 def _show_photo(event):
     sel = hist_tree.selection()
@@ -179,8 +198,6 @@ def _show_photo(event):
         photo_preview.image = None
         preview_label.config(text="No photo available.")
 
-hist_tree.bind("<<TreeviewSelect>>", _show_photo)
-
 
 #state
 packages       = _load_csv()
@@ -188,6 +205,8 @@ cam_running    = False
 cam_thread     = None
 dialog_open    = False
 _listbox_order = []
+#maps treeview item iid → package id string, rebuilt on each refresh_history call
+_tree_id_map   = {}
 
 
 #helpers
@@ -246,6 +265,26 @@ def mark_arrived():
     refresh_listbox()
     refresh_history()
 
+def undo_remove():
+    """Restore the selected removed package back to pending."""
+    sel = hist_tree.selection()
+    if not sel:
+        messagebox.showwarning("None Selected", "Select a removed package to restore.")
+        return
+    iid    = sel[0]
+    pkg_id = _tree_id_map.get(iid)
+    if pkg_id is None:
+        return
+    pkg = next((p for p in packages if p["id"] == pkg_id), None)
+    if pkg is None or pkg["status"] != "removed":
+        messagebox.showinfo("Not Removed", "Only removed packages can be restored.")
+        return
+    pkg["status"] = "pending"
+    _save_csv(packages)
+    refresh_listbox()
+    refresh_history()
+    undo_btn.pack_forget()
+
 def refresh_listbox():
     global _listbox_order
     pkg_listbox.delete(0, tk.END)
@@ -283,8 +322,10 @@ def refresh_listbox():
     )
 
 def refresh_history():
+    global _tree_id_map
     for row in hist_tree.get_children():
         hist_tree.delete(row)
+    _tree_id_map = {}
     today = _today()
     filt  = filter_var.get()
 
@@ -318,7 +359,11 @@ def refresh_history():
             label, tag = "⚠ LATE",    "overdue"
         else:
             label, tag = "Pending",   "pending"
-        hist_tree.insert("", "end", values=(label, p["size"], p["expected_date"], p["photo_path"]), tags=(tag,))
+        iid = hist_tree.insert("", "end", values=(label, p["size"], p["expected_date"], p["photo_path"]), tags=(tag,))
+        _tree_id_map[iid] = p["id"]
+
+    #hide undo button whenever history refreshes (selection is cleared)
+    undo_btn.pack_forget()
 
 
 #detection dialog — called via root.after from the webcam thread

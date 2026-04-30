@@ -1,4 +1,9 @@
 id,size,expected_date,status,photo_path
-1,Medium,20-04-2026,arrived,c:\Code\BoxCapstone\package_photos\20042026_Medium.jpg
-2,Medium,26-04-2026,pending,
+1,Medium,20-04-2026,removed,c:\Code\BoxCapstone\package_photos\20042026_Medium.jpg
+2,Medium,26-04-2026,arrived,
 3,Small,25-04-2026,removed,C:\Code\BoxCapstone\package_photos\25042026_Small.jpg
+4,Small,29-04-2026,arrived,C:\Code\BoxCapstone\package_photos\29042026_Small.jpg
+5,Large,30-04-2026,arrived,C:\Code\BoxCapstone\package_photos\30042026_Large.jpg
+6,Large,30-04-2026,arrived,C:\Code\BoxCapstone\package_photos\30042026_Large.jpg
+7,Medium,30-04-2026,arrived,C:\Code\BoxCapstone\package_photos\30042026_Medium.jpg
+8,Medium,30-04-2026,pending,
